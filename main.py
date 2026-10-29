@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
     QSpinBox, QFrame, QSizePolicy
 )
 
+from i18n import get_language, load_language, save_language, t
 from models.save_file import HadesSaveFile
 
 
@@ -50,6 +51,9 @@ QWidget {{
     background-color: transparent;
     color: {TEXT};
     font-size: 13px;
+}}
+#welcomeDialog {{
+    background-color: {BG_DARK};
 }}
 
 /* ─── Scrollbars ─────────────────────────────────────────────── */
@@ -142,10 +146,20 @@ QGroupBox::title {{
     color: {TEXT_DIM};
     letter-spacing: 2px;
 }}
-#gameToggle:checked {{
+#gameToggle:checked, #langToggle:checked {{
     background: {GOLD};
     border-color: {GOLD};
     color: {BG_DARK};
+}}
+#langToggle {{
+    padding: 10px 14px;
+    font-size: 11px;
+    font-weight: 900;
+    border-radius: 22px;
+    background: {BG_CARD};
+    border: 1px solid {BORDER};
+    color: {TEXT_DIM};
+    letter-spacing: 1px;
 }}
 
 QPushButton {{
@@ -196,6 +210,131 @@ WEAPONS = [
      "aspects": ["Zagreus", "Eris", "Hestia", "Lucifer"]},
 ]
 
+# Boss rooms used by the Pact of Punishment bounties. The save stores the
+# highest cleared heat in RecordClearedShrineThreshold, and each claimed
+# heat level in RecordLastClearedShrineReward.
+HEAT_BOSSES = [
+    ("A_Boss",   "heat.furies",  "heat.furies_sub"),
+    ("B_Boss01", "heat.hydra",   "heat.hydra_sub"),
+    ("C_Boss01", "heat.theseus", "heat.theseus_sub"),
+    ("D_Boss01", "heat.hades",   "heat.hades_sub"),
+]
+
+HEAT_REWARDS = {
+    "SuperLockKeyDrop": "heat.reward.titan_blood",
+    "SuperGemDrop": "heat.reward.diamond",
+    "SuperGiftDrop": "heat.reward.ambrosia",
+}
+
+
+def _as_heat(value):
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return None
+    return None
+
+
+def _stat_text(value):
+    number = _as_heat(value)
+    return "—" if number is None else str(number)
+
+
+def _format_clear_time(value):
+    seconds = _as_heat(value)
+    if seconds is None or seconds <= 0:
+        return "—"
+    minutes, secs = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def _boss_heat_text(threshold, reward_map):
+    """Return highest heat, claimed heat levels, and a reward tooltip."""
+    claimed = []
+    if isinstance(reward_map, dict):
+        for heat, reward in reward_map.items():
+            number = _as_heat(heat)
+            if number is None:
+                continue
+            claimed.append((number, reward))
+        claimed.sort()
+    top = _as_heat(threshold)
+    if top is None and claimed:
+        top = claimed[-1][0]
+    if top is None and not claimed:
+        return "—", "", ""
+    headline = "—" if top is None else str(top)
+    detail = ", ".join(str(number) for number, _reward in claimed)
+    return headline, detail, _reward_tooltip(claimed)
+
+
+def _reward_tooltip(claimed):
+    lines = []
+    for heat, reward in claimed:
+        key = HEAT_REWARDS.get(str(reward))
+        name = t(key) if key else str(reward)
+        lines.append(t("heat.reward.line", heat=heat, reward=name))
+    return "\n".join(lines)
+
+
+class HeatReadout(QFrame):
+    """One read-only cell: a headline number and an optional second line."""
+
+    def __init__(self, accent, parent=None):
+        super().__init__(parent)
+        self.setObjectName("heatCell")
+        self.setMinimumWidth(92)
+        self.setMinimumHeight(58)
+        self.setStyleSheet(
+            f"QFrame#heatCell {{ background: {BG_CARD}; border: 1px solid {BORDER}; border-radius: 10px; }}"
+        )
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(0)
+        lay.addStretch()
+        self.value = QLabel("—")
+        self.value.setAlignment(Qt.AlignCenter)
+        self.detail = QLabel("")
+        self.detail.setAlignment(Qt.AlignCenter)
+        self.detail.setWordWrap(True)
+        self.detail.setVisible(False)
+        self.detail.setStyleSheet(
+            f"background: transparent; border: none; color: {TEXT_DIM}; "
+            f"font-size: 10px; font-weight: 600;"
+        )
+        lay.addWidget(self.value)
+        lay.addWidget(self.detail)
+        lay.addStretch()
+        self._accent = accent
+        self._filled_style = (
+            f"background: transparent; border: none; color: {accent}; "
+            f"font-size: 16px; font-weight: 800;"
+        )
+        self._empty_style = (
+            f"background: transparent; border: none; color: {TEXT_DIM}; "
+            f"font-size: 16px; font-weight: 800;"
+        )
+        self.value.setStyleSheet(self._empty_style)
+
+    def setToolTip(self, text):
+        super().setToolTip(text)
+        self.value.setToolTip(text)
+        self.detail.setToolTip(text)
+
+    def set_readout(self, value, detail=""):
+        self.value.setText(value)
+        self.value.setStyleSheet(self._empty_style if value == "—" else self._filled_style)
+        self.detail.setText(detail)
+        self.detail.setVisible(bool(detail))
+
 
 class PipLevel(QWidget):
     """5 glowing dots indicating aspect level. Click to change."""
@@ -208,7 +347,7 @@ class PipLevel(QWidget):
         self._color = QColor(color)
         self.setFixedSize(120, 22)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip("Click para cambiar nivel")
+        self.setToolTip(t("pip.tooltip"))
 
     def value(self):
         return self._level
@@ -502,17 +641,17 @@ class WeaponCard(QFrame):
 
         v = QVBoxLayout()
         v.setSpacing(1)
-        t = QLabel(info["name"])
-        t.setStyleSheet(f"font-size: 15px; font-weight: 900; color: {color}; "
+        title = QLabel(info["name"])
+        title.setStyleSheet(f"font-size: 15px; font-weight: 900; color: {color}; "
                         f"letter-spacing: 3px; background: transparent;")
         s = QLabel(info["sub"].upper())
         s.setStyleSheet(f"font-size: 9px; color: {TEXT_DIM}; letter-spacing: 2px; background: transparent;")
-        v.addWidget(t)
+        v.addWidget(title)
         v.addWidget(s)
         hlay.addLayout(v)
         hlay.addStretch()
 
-        self.unlock_check = QCheckBox("DESBLOQUEADA")
+        self.unlock_check = QCheckBox(t("aspect.unlocked"))
         self.unlock_check.setStyleSheet(f"""
             QCheckBox {{ color: {color}; font-size: 11px; letter-spacing: 2px;
                          font-weight: bold; background: transparent; }}
@@ -552,7 +691,7 @@ class WeaponCard(QFrame):
         blay.setContentsMargins(14, 8, 14, 12)
         blay.setSpacing(2)
 
-        tag = QLabel("ASPECTOS")
+        tag = QLabel(t("aspect.section"))
         tag.setStyleSheet(f"font-size: 9px; color: {TEXT_DIM}; letter-spacing: 3px; "
                           f"background: transparent; padding: 4px 0;")
         blay.addWidget(tag)
@@ -636,39 +775,208 @@ class WelcomeDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("✦ HSE ✦")
-        self.setFixedSize(500, 420)
+        self.setObjectName("welcomeDialog")
+        self.setFixedSize(500, 480)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
-        
+        self.setStyleSheet(QSS)
+
         lay = QVBoxLayout(self)
         lay.setContentsMargins(50, 50, 50, 50)
         lay.setSpacing(30)
-        self.setStyleSheet(f"background-color: {BG_DARK};")
-        
+
         title = QLabel("HSE")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet(f"font-size: 24px; font-weight: 800; color: {GOLD}; letter-spacing: 12px;")
         lay.addWidget(title)
         
-        desc = QLabel(
-            "Software experimental para la edición de partidas de Hades y Hades II.\n\n"
-            "El uso de esta herramienta puede corromper tus datos. Asegúrate de respaldar "
-            "tus archivos .sav manualmente antes de realizar cambios."
-        )
-        desc.setWordWrap(True)
-        desc.setAlignment(Qt.AlignCenter)
-        desc.setStyleSheet(f"color: {TEXT_DIM}; line-height: 160%; font-size: 13px;")
-        lay.addWidget(desc)
-        
+        self.desc = QLabel()
+        self.desc.setWordWrap(True)
+        self.desc.setAlignment(Qt.AlignCenter)
+        self.desc.setStyleSheet(f"color: {TEXT_DIM}; line-height: 160%; font-size: 13px;")
+        lay.addWidget(self.desc)
+
         lay.addStretch()
-        
-        self.btn = QPushButton("ENTRAR AL INFRAMUNDO")
+
+        langs = QHBoxLayout()
+        langs.setSpacing(12)
+        langs.setAlignment(Qt.AlignCenter)
+        self.btn_en = QPushButton("English")
+        self.btn_es = QPushButton("Español")
+        for btn, lang in ((self.btn_en, "en"), (self.btn_es, "es")):
+            btn.setObjectName("langToggle")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _checked=False, chosen=lang: self._choose_language(chosen))
+            langs.addWidget(btn)
+        lay.addLayout(langs)
+
+        self.btn = QPushButton()
         self.btn.setObjectName("btnPrimary")
         self.btn.setFixedHeight(50)
         self.btn.setCursor(Qt.PointingHandCursor)
         self.btn.clicked.connect(self.accept)
         lay.addWidget(self.btn)
 
-        self.setStyleSheet(QSS)
+        self._apply_language()
+
+    def _choose_language(self, lang):
+        save_language(lang)
+        self._apply_language()
+
+    def _apply_language(self):
+        self.desc.setText(t("welcome.body"))
+        self.btn.setText(t("welcome.enter"))
+        self.btn_en.setChecked(get_language() == "en")
+        self.btn_es.setChecked(get_language() == "es")
+
+# Hades writes saves under Documents\Saved Games\<game>\ProfileN.sav.
+# Steam Cloud uses the same place: root "WinMyDocuments", path "Saved Games/Hades".
+# The Documents folder can live off the system drive, so look it up instead of
+# assuming it is under the user profile.
+def _folder_guid(data1, data2, data3, data4):
+    import ctypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", ctypes.c_ulong),
+            ("Data2", ctypes.c_ushort),
+            ("Data3", ctypes.c_ushort),
+            ("Data4", ctypes.c_ubyte * 8),
+        ]
+
+    return GUID(data1, data2, data3, (ctypes.c_ubyte * 8)(*data4))
+
+
+def _known_documents_dir():
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    folder_id = _folder_guid(
+        0xFDD39AD0, 0x238F, 0x46AF,
+        (0xAD, 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7),
+    )
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+    shell32.SHGetKnownFolderPath.argtypes = [
+        ctypes.POINTER(type(folder_id)),
+        wintypes.DWORD,
+        wintypes.HANDLE,
+        ctypes.POINTER(ctypes.c_wchar_p),
+    ]
+    shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    ole32.CoTaskMemFree.restype = None
+    out = ctypes.c_wchar_p()
+    hr = shell32.SHGetKnownFolderPath(ctypes.byref(folder_id), 0, None, ctypes.byref(out))
+    path = out.value
+    if out:
+        ole32.CoTaskMemFree(out)
+    if hr != 0 or not path:
+        return None
+    return path
+
+
+def _documents_dir():
+    if sys.platform == "win32":
+        known = _known_documents_dir()
+        if known and os.path.isdir(known):
+            return known
+        try:
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+            ) as key:
+                personal, _typ = winreg.QueryValueEx(key, "Personal")
+            if isinstance(personal, str) and os.path.isdir(personal):
+                return personal
+        except OSError:
+            pass
+    home_docs = os.path.join(os.path.expanduser("~"), "Documents")
+    return home_docs if os.path.isdir(home_docs) else None
+
+
+def hades_save_dir(game_name):
+    """Return the existing save folder for 'Hades' or 'Hades II'."""
+    candidates = []
+    if sys.platform == "win32":
+        docs = _documents_dir()
+        if docs:
+            candidates.append(os.path.join(docs, "Saved Games", game_name))
+            candidates.append(os.path.join(docs, game_name))
+        home_docs = os.path.join(os.path.expanduser("~"), "Documents")
+        candidates.append(os.path.join(home_docs, "Saved Games", game_name))
+        candidates.append(os.path.join(home_docs, game_name))
+    else:
+        candidates.append(os.path.expanduser(
+            f"~/Library/Application Support/Supergiant Games/{game_name}"
+        ))
+    seen = set()
+    for path in candidates:
+        key = os.path.normcase(os.path.normpath(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        if os.path.isdir(path):
+            return path
+    return None
+
+
+def _is_profile_sav(name):
+    stem, ext = os.path.splitext(name)
+    if ext.lower() != ".sav" or not stem.lower().startswith("profile"):
+        return False
+    slot = stem[7:]
+    return slot.isdigit() and slot != ""
+
+
+def _active_profile_name(directory):
+    """Hades writes the selected slot into a tiny SGB1 record named activeProfile."""
+    try:
+        with open(os.path.join(directory, "activeProfile"), "rb") as handle:
+            data = handle.read(64)
+    except OSError:
+        return None
+    if len(data) < 8 or not data.startswith(b"SGB1"):
+        return None
+    length = int.from_bytes(data[4:8], "little")
+    if length <= 0 or len(data) < 8 + length:
+        return None
+    try:
+        name = data[8:8 + length].decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    stem = name[:-4] if name.lower().endswith(".sav") else name
+    if _is_profile_sav(stem + ".sav"):
+        return stem
+    return None
+
+
+def preferred_profile_save(directory):
+    """The profile the game has selected, or the newest ProfileN.sav."""
+    if not directory or not os.path.isdir(directory):
+        return None
+    try:
+        names = [name for name in os.listdir(directory) if _is_profile_sav(name)]
+    except OSError:
+        return None
+    files = [
+        os.path.join(directory, name)
+        for name in names
+        if os.path.isfile(os.path.join(directory, name))
+    ]
+    if not files:
+        return None
+    active = _active_profile_name(directory)
+    if active:
+        wanted = active.lower() + ".sav"
+        for path in files:
+            if os.path.basename(path).lower() == wanted:
+                return path
+    return max(files, key=os.path.getmtime)
+
 
 # ── Main window ───────────────────────────────────────────────────────────────
 class HadesEditor(QMainWindow):
@@ -708,20 +1016,22 @@ class HadesEditor(QMainWindow):
         root.addWidget(self._build_footer())
 
     def _rebuild_tabs(self):
+        self._heat_cells = {}
         self.tabs.clear()
         is_h2 = self.game_toggle.isChecked()
         if is_h2:
-            self.tabs.addTab(self._tab_resources_h2(), "⚗  RECURSOS")
-            self.tabs.addTab(self._tab_weapons_h2(),   "⚔  ARMAS  &  HERRAMIENTAS")
-            self.tabs.addTab(self._tab_arcana_h2(),    "🃏  ARCANA")
-            self.tabs.addTab(self._tab_progress(),     "🏛  PROGRESO")
+            self.tabs.addTab(self._tab_resources_h2(), t("tab.resources"))
+            self.tabs.addTab(self._tab_weapons_h2(),   t("tab.weapons_h2"))
+            self.tabs.addTab(self._tab_arcana_h2(),    t("tab.arcana"))
+            self.tabs.addTab(self._tab_progress(),     t("tab.progress"))
         else:
-            self.tabs.addTab(self._tab_resources(),      "⚗  RECURSOS")
-            self.tabs.addTab(self._tab_weapons(),         "⚔  ARMAS  &  ASPECTOS")
-            self.tabs.addTab(self._tab_companions(),      "🐾  COMPAÑEROS")
-            self.tabs.addTab(self._tab_items(),           "🙏  MIRROR  &  KEEPSAKES")
-            self.tabs.addTab(self._tab_cosmetics_h1(),   "🏡  COSMÉTICOS")
-            self.tabs.addTab(self._tab_progress(),       "🏛  PROGRESO")
+            self.tabs.addTab(self._tab_resources(),      t("tab.resources"))
+            self.tabs.addTab(self._tab_weapons(),         t("tab.weapons"))
+            self.tabs.addTab(self._tab_heat(),            t("tab.heat"))
+            self.tabs.addTab(self._tab_companions(),      t("tab.companions"))
+            self.tabs.addTab(self._tab_items(),           t("tab.mirror"))
+            self.tabs.addTab(self._tab_cosmetics_h1(),   t("tab.cosmetics"))
+            self.tabs.addTab(self._tab_progress(),       t("tab.progress"))
 
     # ── Sections ──────────────────────────────────────────────────────────────
     def _build_title(self):
@@ -769,11 +1079,11 @@ class HadesEditor(QMainWindow):
         h.addWidget(self.game_toggle)
         h.addSpacing(10)
 
-        self.btn_load = QPushButton("📂  CARGAR")
+        self.btn_load = QPushButton(t("btn.load"))
         self.btn_load.setObjectName("btnPrimary")
         self.btn_load.clicked.connect(self._load)
 
-        self.btn_save = QPushButton("💾  GUARDAR")
+        self.btn_save = QPushButton(t("btn.save"))
         self.btn_save.setEnabled(False)
         self.btn_save.clicked.connect(self._save)
 
@@ -790,6 +1100,18 @@ class HadesEditor(QMainWindow):
         for b in (self.btn_load, self.btn_save, self.btn_max):
             h.addWidget(b)
         h.addStretch()
+
+        self.btn_en = QPushButton("English")
+        self.btn_es = QPushButton("Español")
+        for btn, lang in ((self.btn_en, "en"), (self.btn_es, "es")):
+            btn.setObjectName("langToggle")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _checked=False, chosen=lang: self._switch_language(chosen))
+            h.addWidget(btn)
+        self.btn_en.setChecked(get_language() == "en")
+        self.btn_es.setChecked(get_language() == "es")
+        h.addSpacing(8)
         h.addWidget(btn_exit)
         return w
 
@@ -802,8 +1124,7 @@ class HadesEditor(QMainWindow):
         
         self._rebuild_tabs()
         if not self.save_file:
-            game_sub = "HADES II" if checked else "HADES"
-            self._path_lbl.setText(f"—  Editor modo {game_sub} (Sin archivo)")
+            self._refresh_path_label()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -819,13 +1140,14 @@ class HadesEditor(QMainWindow):
         h = QHBoxLayout(w)
         h.setContentsMargins(20, 0, 20, 0)
         h.setSpacing(8)
-        k = QLabel("ARCHIVO")
+        k = QLabel(t("path.file"))
         k.setObjectName("pathKey")
-        self._path_lbl = QLabel("—  Ningún archivo cargado")
+        self._path_lbl = QLabel(t("path.none"))
         self._path_lbl.setObjectName("pathValue")
         h.addWidget(k)
         h.addWidget(self._path_lbl)
         h.addStretch()
+        self._refresh_path_label()
         return w
 
     def _build_footer(self):
@@ -833,7 +1155,7 @@ class HadesEditor(QMainWindow):
         w.setFixedHeight(30)
         h = QHBoxLayout(w)
         h.setContentsMargins(24, 0, 24, 0)
-        lbl = QLabel("© HSE - Desarrollado y diseñado por Marcos Galán | Original por Zsennenga")
+        lbl = QLabel(t("footer"))
         lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px; letter-spacing: 1px;")
         lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         h.addWidget(lbl)
@@ -856,7 +1178,7 @@ class HadesEditor(QMainWindow):
         lay.setContentsMargins(24, 20, 24, 24)
         lay.setSpacing(20)
 
-        grp = self._group("MONEDAS Y RECURSOS")
+        grp = self._group(t("group.currencies"))
         grid = QGridLayout(grp)
         grid.setSpacing(14)
 
@@ -877,11 +1199,11 @@ class HadesEditor(QMainWindow):
 
         lay.addWidget(grp)
 
-        grp2 = self._group("MODOS DE JUEGO")
+        grp2 = self._group(t("group.modes"))
         h2 = QHBoxLayout(grp2)
         h2.setSpacing(32)
-        self.chk_god  = self._fancy_check("⚡  GOD MODE",   GOLD)
-        self.chk_hell = self._fancy_check("🔥  HELL MODE",  RED)
+        self.chk_god  = self._fancy_check(t("mode.god"),   GOLD)
+        self.chk_hell = self._fancy_check(t("mode.hell"),  RED)
         h2.addWidget(self.chk_god)
         h2.addWidget(self.chk_hell)
         h2.addStretch()
@@ -895,10 +1217,7 @@ class HadesEditor(QMainWindow):
         lay.setContentsMargins(24, 16, 24, 24)
         lay.setSpacing(4)
 
-        hint = QLabel(
-            "✦  Haz click en los  pips  para cambiar el nivel directamente  "
-            "•  Nivel 0 = bloqueado  •  Máximo nivel 5"
-        )
+        hint = QLabel(t("aspect.hint"))
         hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px; letter-spacing: 1px; "
                            f"padding: 8px 0 14px 0; background: transparent;")
         lay.addWidget(hint)
@@ -914,19 +1233,135 @@ class HadesEditor(QMainWindow):
         lay.addStretch()
         return scroll
 
+    def _tab_heat(self):
+        scroll, inner = self._scroll_tab()
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(24, 16, 24, 24)
+        lay.setSpacing(12)
+
+        hint = QLabel(t("heat.hint"))
+        hint.setWordWrap(True)
+        hint.setStyleSheet(
+            f"color: {TEXT_DIM}; font-size: 11px; letter-spacing: 0.4px; "
+            f"padding: 8px 0 6px 0; background: transparent;"
+        )
+        lay.addWidget(hint)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
+        grid.setColumnStretch(0, 2)
+        for col in range(1, 8):
+            grid.setColumnStretch(col, 1)
+
+        headers = [
+            (t("heat.weapon"), ""),
+            (t("heat.clears"), ""),
+            (t("heat.best"), ""),
+            (t("heat.fastest"), ""),
+        ]
+        headers.extend((t(title_key), t(sub_key)) for _room, title_key, sub_key in HEAT_BOSSES)
+        for col, (title, subtitle) in enumerate(headers):
+            grid.addWidget(self._heat_header(title, subtitle), 0, col)
+
+        self._heat_cells = {}
+        for row, info in enumerate(WEAPONS, start=1):
+            accent, _bg = WEAPON_COLOR[info["key"]]
+            grid.addWidget(self._heat_weapon_label(info, accent), row, 0)
+            clears = HeatReadout(accent)
+            best = HeatReadout(GOLD)
+            fastest = HeatReadout(TEXT)
+            bosses = {}
+            grid.addWidget(clears, row, 1)
+            grid.addWidget(best, row, 2)
+            grid.addWidget(fastest, row, 3)
+            for col, (room, _title_key, _sub_key) in enumerate(HEAT_BOSSES, start=4):
+                cell = HeatReadout(GOLD)
+                bosses[room] = cell
+                grid.addWidget(cell, row, col)
+            self._heat_cells[info["key"]] = {
+                "clears": clears,
+                "best": best,
+                "time": fastest,
+                "bosses": bosses,
+            }
+
+        lay.addLayout(grid)
+        lay.addStretch()
+
+        if self.save_file is not None:
+            gs = self.save_file.lua_state._active_state.get("GameState", {})
+            if isinstance(gs, dict):
+                self._fill_heat(gs)
+        return scroll
+
+    def _heat_header(self, title, subtitle=""):
+        text = title if not subtitle else f"{title}\n{subtitle}"
+        lbl = QLabel(text)
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setStyleSheet(
+            f"color: {TEXT_DIM}; font-size: 10px; font-weight: 800; letter-spacing: 1px;"
+            f"background: transparent; padding: 2px 4px;"
+        )
+        return lbl
+
+    def _heat_weapon_label(self, info, accent):
+        wrap = QWidget()
+        lay = QVBoxLayout(wrap)
+        lay.setContentsMargins(8, 4, 8, 4)
+        lay.setSpacing(1)
+        name = QLabel(f"{info['icon']}  {info['name']}")
+        name.setStyleSheet(
+            f"color: {accent}; font-size: 13px; font-weight: 800; letter-spacing: 1px; "
+            f"background: transparent;"
+        )
+        sub = QLabel(info["sub"])
+        sub.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px; background: transparent;")
+        lay.addWidget(name)
+        lay.addWidget(sub)
+        return wrap
+
+    def _fill_heat(self, gs):
+        cells = getattr(self, "_heat_cells", None)
+        if not cells or not isinstance(gs, dict):
+            return
+        thresholds = gs.get("RecordClearedShrineThreshold") or {}
+        rewards = gs.get("RecordLastClearedShrineReward") or {}
+        clears = gs.get("TimesClearedWeapon") or {}
+        best = gs.get("WeaponRecordsShrinePoints") or {}
+        times = gs.get("WeaponRecordsClearTime") or {}
+        for info in WEAPONS:
+            key = info["key"]
+            row = cells[key]
+            weapon_thresholds = thresholds.get(key, {}) if isinstance(thresholds, dict) else {}
+            weapon_rewards = rewards.get(key, {}) if isinstance(rewards, dict) else {}
+            if not isinstance(weapon_thresholds, dict):
+                weapon_thresholds = {}
+            if not isinstance(weapon_rewards, dict):
+                weapon_rewards = {}
+            row["clears"].set_readout(_stat_text(clears.get(key) if isinstance(clears, dict) else None))
+            row["best"].set_readout(_stat_text(best.get(key) if isinstance(best, dict) else None))
+            row["time"].set_readout(_format_clear_time(times.get(key) if isinstance(times, dict) else None))
+            for room, _title_key, _sub_key in HEAT_BOSSES:
+                headline, detail, tip = _boss_heat_text(
+                    weapon_thresholds.get(room), weapon_rewards.get(room)
+                )
+                row["bosses"][room].set_readout(headline, detail)
+                row["bosses"][room].setToolTip(tip)
+
     def _tab_progress(self):
         scroll, inner = self._scroll_tab()
         lay = QVBoxLayout(inner)
         lay.setContentsMargins(24, 20, 24, 24)
         lay.setSpacing(20)
 
-        grp = self._group("ESTADÍSTICAS DE RUN")
+        grp = self._group(t("group.run_stats"))
         grid = QGridLayout(grp)
         grid.setSpacing(14)
         meta_res = [
-            ("🏃", "Runs totales",        "runs",                "#80c080"),
-            ("🌑", "Darkness (header)",   "active_meta_points",  GOLD),
-            ("🏛", "Puntos de Santuario", "active_shrine_points","#a0b0f0"),
+            ("🏃", t("stat.runs"),     "runs",                "#80c080"),
+            ("🌑", t("stat.darkness"), "active_meta_points",  GOLD),
+            ("🏛", t("stat.shrine"),   "active_shrine_points","#a0b0f0"),
         ]
         self._meta = {}
         for i, (icon, label, key, color) in enumerate(meta_res):
@@ -935,11 +1370,11 @@ class HadesEditor(QMainWindow):
             grid.addWidget(card, 0, i)
         lay.addWidget(grp)
 
-        grp2 = self._group("FLAGS DE JUEGO")
+        grp2 = self._group(t("group.game_flags"))
         h2 = QHBoxLayout(grp2)
         h2.setSpacing(28)
-        self.chk_aspects = self._fancy_check("🗡  ASPECTOS DESBLOQUEADOS", "#c0a0f0")
-        self.chk_gun     = self._fancy_check("⚡  RAIL DESBLOQUEADO (GUN)", "#8090d0")
+        self.chk_aspects = self._fancy_check(t("flagbar.aspects"), "#c0a0f0")
+        self.chk_gun     = self._fancy_check(t("flagbar.gun"), "#8090d0")
         h2.addWidget(self.chk_aspects)
         h2.addWidget(self.chk_gun)
         h2.addStretch()
@@ -962,15 +1397,15 @@ class HadesEditor(QMainWindow):
             ("NPC_FurySister_01",      "😤", "Megaera",          "#d04060"),
             ("NPC_Thanatos_01",        "⚖", "Thanatos",         "#80b0e0"),
             ("NPC_Dusa_01",            "🐍", "Dusa",             "#60c080"),
-            ("NPC_Orpheus_01",         "🎵", "Orfeo",            "#c090f0"),
-            ("NPC_Eurydice_01",        "🌿", "Eurídice",         "#80e080"),
+            ("NPC_Orpheus_01",         "🎵", t("name.orpheus"),    "#c090f0"),
+            ("NPC_Eurydice_01",        "🌿", t("name.eurydice"),   "#80e080"),
             ("NPC_Hypnos_01",          "💤", "Hypnos",           "#7090a0"),
-            ("NPC_Sisyphus_01",        "🪨", "Sísifo",           "#a0b080"),
+            ("NPC_Sisyphus_01",        "🪨", t("name.sisyphus"),   "#a0b080"),
             ("NPC_Skelly_01",          "💀", "Skelly",           "#d0c0a0"),
-            ("NPC_Patroclus_01",       "🛡", "Patroclo",         "#a0c0e0"),
-            ("NPC_Charon_01",          "⛵", "Caronte",          "#c0a040"),
+            ("NPC_Patroclus_01",       "🛡", t("name.patroclus"),  "#a0c0e0"),
+            ("NPC_Charon_01",          "⛵", t("name.charon"),     "#c0a040"),
         ]
-        grp_npc = self._group("RELACIONES DE PERSONAJES  (Nivel de afinidad: 0–max)")
+        grp_npc = self._group(t("group.relationships"))
         g_lay = QGridLayout(grp_npc)
         g_lay.setSpacing(10)
         self._npc_spin = {}
@@ -1009,16 +1444,16 @@ class HadesEditor(QMainWindow):
 
         # ── Important Flags ──
         FLAGS = [
-            ("AspectsUnlocked",   "🗡",  "Aspectos desbloqueados",  "#c0a0f0"),
-            ("GunUnlocked",       "⚡",  "Rail (Exagryph) desbloqueado", "#8090d0"),
-            ("FistUnlocked",      "✊",  "Puños (Malphon) desbloqueados", "#e08060"),
-            ("SkellyUnlocked",    "💀",  "Skelly desbloqueado",     "#d0c090"),
-            ("MetEurydice",       "🌿",  "Conociste a Eurídice",    "#70d070"),
-            ("MetHades",          "👑",  "Conociste a Hades",       "#e05050"),
-            ("AllowFlashback",    "💭",  "Flashbacks habilitados",  "#8090b0"),
-            ("SwapMetaupgradesEnabled", "🔄", "Intercambio de Mirror On", "#60b0c0"),
+            ("AspectsUnlocked",   "🗡",  t("flag.aspects"),     "#c0a0f0"),
+            ("GunUnlocked",       "⚡",  t("flag.gun"),         "#8090d0"),
+            ("FistUnlocked",      "✊",  t("flag.fists"),       "#e08060"),
+            ("SkellyUnlocked",    "💀",  t("flag.skelly"),      "#d0c090"),
+            ("MetEurydice",       "🌿",  t("flag.eurydice"),    "#70d070"),
+            ("MetHades",          "👑",  t("flag.hades"),       "#e05050"),
+            ("AllowFlashback",    "💭",  t("flag.flashbacks"),  "#8090b0"),
+            ("SwapMetaupgradesEnabled", "🔄", t("flag.mirror_swap"), "#60b0c0"),
         ]
-        grp_flags = self._group("FLAGS DE DESBLOQUEO")
+        grp_flags = self._group(t("group.unlock_flags"))
         fl_grid = QGridLayout(grp_flags)
         fl_grid.setSpacing(10)
         self._flag_checks = {}
@@ -1030,28 +1465,28 @@ class HadesEditor(QMainWindow):
 
         # ── Quest status ──
         QUESTS = [
-            ("WeaponAspects",       "🗡",  "Aspectos de armas"),
-            ("WeaponUnlocks",       "🔓",  "Desbloqueo de armas"),
-            ("FirstClear",          "🏆",  "Primera victoria"),
-            ("MeetOlympians",       "⚡",  "Conocer Olímpicos"),
-            ("MeetChthonicGods",    "🌑",  "Conocer dioses ctónicos"),
-            ("AresUpgrades",        "⚔",  "Mejoras de Ares"),
-            ("AthenaUpgrades",      "🛡",  "Mejoras de Atenea"),
-            ("AphroditeUpgrades",   "💕",  "Mejoras de Afrodita"),
-            ("DionysusUpgrades",    "🍇",  "Mejoras de Dioniso"),
-            ("DemeterUpgrades",     "❄",  "Mejoras de Deméter"),
-            ("ArtemisUpgrades",     "🏹",  "Mejoras de Artemisa"),
-            ("PoseidonUpgrades",    "🌊",  "Mejoras de Poseidón"),
-            ("ZeusUpgrades",        "⚡",  "Mejoras de Zeus"),
-            ("HermesUpgrades",      "🪶",  "Mejoras de Hermes"),
-            ("OrpheusRelease",      "🎵",  "Liberación de Orfeo"),
-            ("LegendaryUpgrades",   "✨",  "Mejoras legendarias"),
-            ("CosmeticsSmall",      "🎨",  "Cosméticos básicos"),
-            ("CodexSmall",          "📖",  "Códex básico"),
-            ("MiniBossKills",       "💀",  "Matar mini-jefes"),
-            ("KeepsakesQuest",      "🎁",  "Misión de recuerdos"),
+            ("WeaponAspects",       "🗡",  t("quest.weapon_aspects")),
+            ("WeaponUnlocks",       "🔓",  t("quest.weapon_unlocks")),
+            ("FirstClear",          "🏆",  t("quest.first_clear")),
+            ("MeetOlympians",       "⚡",  t("quest.olympians")),
+            ("MeetChthonicGods",    "🌑",  t("quest.chthonic")),
+            ("AresUpgrades",        "⚔",  t("quest.ares")),
+            ("AthenaUpgrades",      "🛡",  t("quest.athena")),
+            ("AphroditeUpgrades",   "💕",  t("quest.aphrodite")),
+            ("DionysusUpgrades",    "🍇",  t("quest.dionysus")),
+            ("DemeterUpgrades",     "❄",  t("quest.demeter")),
+            ("ArtemisUpgrades",     "🏹",  t("quest.artemis")),
+            ("PoseidonUpgrades",    "🌊",  t("quest.poseidon")),
+            ("ZeusUpgrades",        "⚡",  t("quest.zeus")),
+            ("HermesUpgrades",      "🪶",  t("quest.hermes")),
+            ("OrpheusRelease",      "🎵",  t("quest.orpheus")),
+            ("LegendaryUpgrades",   "✨",  t("quest.legendary")),
+            ("CosmeticsSmall",      "🎨",  t("quest.cosmetics")),
+            ("CodexSmall",          "📖",  t("quest.codex")),
+            ("MiniBossKills",       "💀",  t("quest.miniboss")),
+            ("KeepsakesQuest",      "🎁",  t("quest.keepsakes")),
         ]
-        grp_q = self._group("MISIONES  (marca = completada / cobrada)")
+        grp_q = self._group(t("group.quests"))
         q_grid = QGridLayout(grp_q)
         q_grid.setSpacing(8)
         self._quest_checks = {}
@@ -1077,64 +1512,61 @@ class HadesEditor(QMainWindow):
         lay.setContentsMargins(24, 20, 24, 24)
         lay.setSpacing(20)
 
-        hint = QLabel(
-            "✦  Marca los ítems para comprarlos  •  "
-            "Aparecerán en tu sala de inicio como si los hubieras comprado al Contratista"
-        )
+        hint = QLabel(t("cosmetics.hint"))
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px; padding-bottom: 6px;")
         lay.addWidget(hint)
 
         COSMETICS_SECTIONS = [
-            ("🏡  DECORACIÓN DE SALA", [
-                ("Cosmetic_SouthHallTrimGrey",   "Moldura Gris"),
-                ("Cosmetic_SouthHallTrimBrown",  "Moldura Marrón"),
-                ("Cosmetic_SouthHallTrimRed",    "Moldura Roja"),
-                ("Cosmetic_SouthHallTrimPurple", "Moldura Púrpura"),
-                ("Cosmetic_DrapesBlue",          "Cortinas Azules"),
-                ("Cosmetic_DrapesRed",           "Cortinas Rojas"),
-                ("Cosmetic_HouseCandles01",      "Candelabros"),
-                ("Cosmetic_LaurelsRed",          "Laureles Rojos"),
-                ("Cosmetic_NorthHallCouch",      "Sofá (Hall Norte)"),
-                ("Cosmetic_SouthHallFlowers",    "Flores (Hall Sur)"),
-                ("Cosmetic_SouthHallFlowersA",   "Flores Alt. (Hall Sur)"),
-                ("Cosmetic_WallWeaponBident",    "Bidente en la pared"),
-                ("Cosmetic_ClearFur",           "Piel de Cerbero"),
-                ("Cosmetic_MusicPlayer",        "Reproductor de Música"),
-                ("Cosmetic_UISkinDefault",      "Skin UI Defecto"),
-                ("HouseCouch02A",               "Sofá Principal"),
-                ("HouseLyre01",                 "Lira de Orfeo"),
-                ("HousePoster01",               "Póster del Inframundo"),
-                ("HouseRug03B",                 "Alfombra Oscura"),
-                ("HouseWaterBowl01",            "Cuenco de Agua Estigia"),
+            (t("cos.decor"), [
+                ("Cosmetic_SouthHallTrimGrey",   t("cos.trim_grey")),
+                ("Cosmetic_SouthHallTrimBrown",  t("cos.trim_brown")),
+                ("Cosmetic_SouthHallTrimRed",    t("cos.trim_red")),
+                ("Cosmetic_SouthHallTrimPurple", t("cos.trim_purple")),
+                ("Cosmetic_DrapesBlue",          t("cos.drapes_blue")),
+                ("Cosmetic_DrapesRed",           t("cos.drapes_red")),
+                ("Cosmetic_HouseCandles01",      t("cos.candles")),
+                ("Cosmetic_LaurelsRed",          t("cos.laurels")),
+                ("Cosmetic_NorthHallCouch",      t("cos.couch_north")),
+                ("Cosmetic_SouthHallFlowers",    t("cos.flowers")),
+                ("Cosmetic_SouthHallFlowersA",   t("cos.flowers_alt")),
+                ("Cosmetic_WallWeaponBident",    t("cos.bident")),
+                ("Cosmetic_ClearFur",           t("cos.fur")),
+                ("Cosmetic_MusicPlayer",        t("cos.music_player")),
+                ("Cosmetic_UISkinDefault",      t("cos.ui_skin")),
+                ("HouseCouch02A",               t("cos.main_couch")),
+                ("HouseLyre01",                 t("cos.lyre")),
+                ("HousePoster01",               t("cos.poster")),
+                ("HouseRug03B",                 t("cos.rug")),
+                ("HouseWaterBowl01",            t("cos.bowl")),
             ]),
-            ("🎮  MEJORAS DE GAMEPLAY", [
-                ("BreakableValue1",    "Objetos rompibles I"),
-                ("BreakableValue2",    "Objetos rompibles II"),
-                ("BreakableValue3",    "Objetos rompibles III"),
-                ("ChallengeSwitches1", "Interruptores de combate I"),
-                ("ChallengeSwitches2", "Interruptores de combate II"),
-                ("HealthFountainHeal1", "Fuente curativa I"),
-                ("HealthFountainHeal2", "Fuente curativa II"),
-                ("FishingUnlockItem",  "Caña de pescar de Caronte"),
-                ("QuestLog",           "Registro de misiones"),
-                ("CodexBoonList",      "Lista de pociones del Códex"),
+            (t("cos.gameplay"), [
+                ("BreakableValue1",    t("cos.breakable1")),
+                ("BreakableValue2",    t("cos.breakable2")),
+                ("BreakableValue3",    t("cos.breakable3")),
+                ("ChallengeSwitches1", t("cos.switches1")),
+                ("ChallengeSwitches2", t("cos.switches2")),
+                ("HealthFountainHeal1", t("cos.fountain1")),
+                ("HealthFountainHeal2", t("cos.fountain2")),
+                ("FishingUnlockItem",  t("cos.fishing")),
+                ("QuestLog",           t("cos.quest_log")),
+                ("CodexBoonList",      t("cos.codex_boons")),
             ]),
-            ("📖  HISTORIA Y PERSONAJES", [
-                ("OfficeDoorUnlockItem", "Puerta del despacho de Hades"),
-                ("OrpheusUnlockItem",    "Liberar a Orfeo"),
-                ("GhostAdminDesk",       "Mesa administrativa fantasmal"),
-                ("PostBossGiftRack",     "Expositor de regalos (post-jefe)"),
+            (t("cos.story"), [
+                ("OfficeDoorUnlockItem", t("cos.office_door")),
+                ("OrpheusUnlockItem",    t("cos.orpheus")),
+                ("GhostAdminDesk",       t("cos.admin_desk")),
+                ("PostBossGiftRack",     t("cos.gift_rack")),
             ]),
-            ("🗺️  REMANSOS DE PAZ", [
-                ("TartarusReprieve",  "Remanso del Tártaro"),
-                ("AsphodelReprieve",  "Remanso del Asfódelo"),
-                ("ElysiumReprieve",   "Remanso del Elíseo"),
+            (t("cos.reprieves"), [
+                ("TartarusReprieve",  t("cos.tartarus")),
+                ("AsphodelReprieve",  t("cos.asphodel")),
+                ("ElysiumReprieve",   t("cos.elysium")),
             ]),
-            ("🎵  MÚSICA", [
-                ("/Music/MusicPlayer/MainThemeMusicPlayer",      "Tema Principal"),
-                ("/Music/MusicPlayer/EurydiceSong1MusicPlayer",  "Canción de Eurídice"),
-                ("/Music/MusicPlayer/MusicExploration4MusicPlayer", "Música de Exploración"),
+            (t("cos.music"), [
+                ("/Music/MusicPlayer/MainThemeMusicPlayer",      t("cos.theme")),
+                ("/Music/MusicPlayer/EurydiceSong1MusicPlayer",  t("cos.eurydice_song")),
+                ("/Music/MusicPlayer/MusicExploration4MusicPlayer", t("cos.exploration")),
             ]),
         ]
 
@@ -1178,20 +1610,34 @@ class HadesEditor(QMainWindow):
         """)
         return c
 
+    def _game_save_name(self):
+        return "Hades II" if self.game_toggle.isChecked() else "Hades"
+
     def _hades_dir(self):
-        is_hades_2 = self.game_toggle.isChecked()
-        game_dir = "Hades II" if is_hades_2 else "Hades"
-        
-        if sys.platform == "win32":
-            # Windows: Saved Games
-            d = os.path.join(os.path.expanduser("~"), "Documents", "Saved Games", game_dir)
-            if not os.path.isdir(d):
-                d = os.path.join(os.path.expanduser("~"), "Documents", game_dir)
+        found = hades_save_dir(self._game_save_name())
+        return found if found else os.path.expanduser("~")
+
+    def _dialog_start(self):
+        directory = hades_save_dir(self._game_save_name())
+        if not directory:
+            return os.path.expanduser("~")
+        return preferred_profile_save(directory) or directory
+
+    def _refresh_path_label(self):
+        if self.save_file:
+            if self.file_path:
+                self._path_lbl.setText(self.file_path)
+            return
+        directory = hades_save_dir(self._game_save_name())
+        newest = preferred_profile_save(directory) if directory else None
+        if newest:
+            self._path_lbl.setText(t("path.found", path=newest))
+        elif directory:
+            self._path_lbl.setText(t("path.found_dir", path=directory))
         else:
-            # macOS
-            d = os.path.expanduser(f"~/Library/Application Support/Supergiant Games/{game_dir}")
-        
-        return d if os.path.isdir(d) else os.path.expanduser("~")
+            game_sub = "HADES II" if self.game_toggle.isChecked() else "HADES"
+            self._path_lbl.setText(t("path.mode", game=game_sub))
+        self._path_lbl.setToolTip(self._path_lbl.text())
 
     # ── Items tab (Mirror + Keepsakes) ────────────────────────────────────────
     def _tab_items(self):
@@ -1202,27 +1648,27 @@ class HadesEditor(QMainWindow):
 
         # Mirror upgrades
         MIRROR = [
-            ("HealthMetaUpgrade",             "❤",  "Death Defiance (vidas extra)",       10, "#c03030"),
-            ("AmmoMetaUpgrade",               "🔵",  "Death Defiance extra carga",          6,  "#4080c0"),
-            ("ExtraChanceMetaUpgrade",        "♻",  "Stubborn Defiance (sec. chance)",     1,  "#60a060"),
-            ("ExtraChanceReplenishMetaUpgrade","♻", "Stubborn Defiance recarga",           1,  "#50c060"),
-            ("StaminaMetaUpgrade",            "💨",  "Greater Reflex (dash extra)",         1,  "#80c0f0"),
-            ("RareBoonDropMetaUpgrade",       "⭐",  "Rare Boon (aumento rareza)",          40, "#c0a030"),
-            ("EpicBoonDropMetaUpgrade",       "💫",  "Epic Boon upgrade",                   40, "#a030c0"),
-            ("GodEnhancementMetaUpgrade",     "⚡",  "Privileged Status (3er slot)",        1,  "#a0a0f0"),
-            ("DuoRarityBoonDropMetaUpgrade",  "🔗",  "Duo Boon chance (Duplexidad)",        40, "#f09030"),
-            ("BackstabMetaUpgrade",           "🗡",  "Knife Trick (daño por espalda)",      5,  "#e06020"),
-            ("FirstStrikeMetaUpgrade",        "⚡",  "Fated Authority (primer golpe)",      5,  "#e0c020"),
-            ("PerfectDashMetaUpgrade",        "✨",  "Fated Persuasion (dash evasivo)",     5,  "#30c0f0"),
-            ("MoneyMetaUpgrade",              "💰",  "Tight Deadline (oro de combate)",     5,  "#c0c040"),
-            ("DarknessHealMetaUpgrade",       "🌑",  "Dark Regeneration (vida de Darkness)",5, "#8040a0"),
-            ("DoorHealMetaUpgrade",           "🚪",  "Thick Skin (vida al entrar sala)",    5,  "#309050"),
-            ("InterestMetaUpgrade",           "👜",  "Chthonic Vitality (interés oro)",     5,  "#c0a040"),
-            ("RerollMetaUpgrade",             "🎲",  "Fated Choice (rerolls)",              5,  "#6090d0"),
-            ("ReloadAmmoMetaUpgrade",         "🔄",  "Death Defiance recarga",              5,  "#4090c0"),
-            ("RunProgressRewardMetaUpgrade",  "🏆",  "Infernal Soul (bonus por avance)",    5,  "#d06030"),
+            ("HealthMetaUpgrade",             "❤",  t("mirror.health"),          10, "#c03030"),
+            ("AmmoMetaUpgrade",               "🔵",  t("mirror.ammo"),            6,  "#4080c0"),
+            ("ExtraChanceMetaUpgrade",        "♻",  t("mirror.extra_chance"),    1,  "#60a060"),
+            ("ExtraChanceReplenishMetaUpgrade","♻", t("mirror.extra_replenish"), 1,  "#50c060"),
+            ("StaminaMetaUpgrade",            "💨",  t("mirror.stamina"),         1,  "#80c0f0"),
+            ("RareBoonDropMetaUpgrade",       "⭐",  t("mirror.rare"),            40, "#c0a030"),
+            ("EpicBoonDropMetaUpgrade",       "💫",  t("mirror.epic"),            40, "#a030c0"),
+            ("GodEnhancementMetaUpgrade",     "⚡",  t("mirror.privileged"),      1,  "#a0a0f0"),
+            ("DuoRarityBoonDropMetaUpgrade",  "🔗",  t("mirror.duo"),             40, "#f09030"),
+            ("BackstabMetaUpgrade",           "🗡",  t("mirror.backstab"),        5,  "#e06020"),
+            ("FirstStrikeMetaUpgrade",        "⚡",  t("mirror.first_strike"),    5,  "#e0c020"),
+            ("PerfectDashMetaUpgrade",        "✨",  t("mirror.perfect_dash"),    5,  "#30c0f0"),
+            ("MoneyMetaUpgrade",              "💰",  t("mirror.money"),           5,  "#c0c040"),
+            ("DarknessHealMetaUpgrade",       "🌑",  t("mirror.darkness_heal"),   5,  "#8040a0"),
+            ("DoorHealMetaUpgrade",           "🚪",  t("mirror.door_heal"),       5,  "#309050"),
+            ("InterestMetaUpgrade",           "👜",  t("mirror.interest"),        5,  "#c0a040"),
+            ("RerollMetaUpgrade",             "🎲",  t("mirror.reroll"),          5,  "#6090d0"),
+            ("ReloadAmmoMetaUpgrade",         "🔄",  t("mirror.reload"),          5,  "#4090c0"),
+            ("RunProgressRewardMetaUpgrade",  "🏆",  t("mirror.run_progress"),    5,  "#d06030"),
         ]
-        grp_mirror = self._group("MIRROR OF NIGHT  —  Mejoras permanentes")
+        grp_mirror = self._group(t("group.mirror"))
         m_grid = QGridLayout(grp_mirror)
         m_grid.setSpacing(10)
         self._mirror_spin = {}
@@ -1291,27 +1737,27 @@ class HadesEditor(QMainWindow):
         # Keepsakes — all Hades keepsakes by their KeepsakeChambers trait name
         KEEPSAKES = [
             ("MaxHealthKeepsakeTrait",         "🐶", "Old Spiked Collar",          "Cerberus",  "#e8a020", "NPC_Cerberus_01"),
-            ("ForceArtemisBoonTrait",           "🏹", "Adamant Arrowhead",          "Artemisa",  "#60d060", "ArtemisUpgrade"),
-            ("ForceAphroditeBoonTrait",         "🌹", "Eternal Rose",              "Afrodita",  "#f060a0", "AphroditeUpgrade"),
+            ("ForceArtemisBoonTrait",           "🏹", "Adamant Arrowhead",          t("name.artemis"),   "#60d060", "ArtemisUpgrade"),
+            ("ForceAphroditeBoonTrait",         "🌹", "Eternal Rose",              t("name.aphrodite"), "#f060a0", "AphroditeUpgrade"),
             ("ForceAresBoonTrait",              "⚔",  "Blood-Filled Vial",         "Ares",      "#c03020", "AresUpgrade"),
-            ("ForceAthenaBoonTrait",            "🛡",  "Owl Pendant",               "Atenea",    "#60a0e0", "AthenaUpgrade"),
-            ("ForceDionysusBoonTrait",          "🍇", "Overflowing Cup",           "Dioniso",   "#c050c0", "DionysusUpgrade"),
+            ("ForceAthenaBoonTrait",            "🛡",  "Owl Pendant",               t("name.athena"),    "#60a0e0", "AthenaUpgrade"),
+            ("ForceDionysusBoonTrait",          "🍇", "Overflowing Cup",           t("name.dionysus"),  "#c050c0", "DionysusUpgrade"),
             ("ForceZeusBoonTrait",              "⚡",  "Thunder Signet",            "Zeus",      "#d0c020", "ZeusUpgrade"),
             ("ForceHermesBoonTrait",            "🪶", "Lambent Plume",             "Hermes",    "#d0d090", "HermesUpgrade"),
-            ("ForcePoseidonBoonTrait",          "🌊", "Conch Shell",               "Poseidón",  "#3090d0", "PoseidonUpgrade"),
-            ("ForceDemeterBoonTrait",           "❄",  "Pom Blossom",               "Deméter",   "#80b0d0", "DemeterUpgrade"),
+            ("ForcePoseidonBoonTrait",          "🌊", "Conch Shell",               t("name.poseidon"),  "#3090d0", "PoseidonUpgrade"),
+            ("ForceDemeterBoonTrait",           "❄",  "Pom Blossom",               t("name.demeter"),   "#80b0d0", "DemeterUpgrade"),
             ("PerfectClearDamageBonusTrait",   "🐍", "Harpy Feather Duster",      "Dusa",      "#60c080", "NPC_Dusa_01"),
-            ("BonusMoneyTrait",                "💰", "Charon's Obol",             "Caronte",   "#c0a040", "NPC_Charon_01"),
-            ("ReincarnationTrait",             "💀", "Shattered Shackle",         "Sísifo",    "#909090", "NPC_Sisyphus_01"),
+            ("BonusMoneyTrait",                "💰", "Charon's Obol",             t("name.charon"),    "#c0a040", "NPC_Charon_01"),
+            ("ReincarnationTrait",             "💀", "Shattered Shackle",         t("name.sisyphus"),  "#909090", "NPC_Sisyphus_01"),
             ("MoveSpeedKeepsakeTrait",         "💨", "Pierced Butterfly",         "Thanatos",  "#80b0e0", "NPC_Thanatos_01"),
-            ("RapidBoonsKeepsakeTrait",        "🎵", "Lyre of Orpheus",           "Orfeo",     "#c090f0", "NPC_Orpheus_01"),
-            ("TemporaryInvulnerabilityTrait",  "🌿", "Evergreen Acorn",           "Eurídice",  "#80e080", "NPC_Eurydice_01"),
-            ("HealingItemKeepsakeTrait",       "🍷", "Nectar / Bracer",           "Sísifo/Ach"," #a0b080", "NPC_Sisyphus_01"),
+            ("RapidBoonsKeepsakeTrait",        "🎵", "Lyre of Orpheus",           t("name.orpheus"),   "#c090f0", "NPC_Orpheus_01"),
+            ("TemporaryInvulnerabilityTrait",  "🌿", "Evergreen Acorn",           t("name.eurydice"),  "#80e080", "NPC_Eurydice_01"),
+            ("HealingItemKeepsakeTrait",       "🍷", "Nectar / Bracer",           t("name.sisyphus_achilles"), "#a0b080", "NPC_Sisyphus_01"),
             ("ForceBlessedTrait",              "🦴", "Lucky Tooth",               "Skelly",    "#d0c090", "NPC_Skelly_01"),
-            ("RoomMoneyBonusTrait",            "🛡",  "Black Shawl",               "Patroclo",  "#a0c0e0", "NPC_Patroclus_01"),
+            ("RoomMoneyBonusTrait",            "🛡",  "Black Shawl",               t("name.patroclus"), "#a0c0e0", "NPC_Patroclus_01"),
             ("ForceAchillesBoonTrait",         "⚔",  "Broken Spearpoint",         "Achilles",  "#e06040", "NPC_Achilles_01"),
         ]
-        grp_ks = self._group("KEEPSAKES  —  Usos acumulados en salas (más = mayor nivel del recuerdo)")
+        grp_ks = self._group(t("group.keepsakes"))
         ks_grid = QGridLayout(grp_ks)
         ks_grid.setSpacing(8)
         self._ks_spin = {}
@@ -1330,7 +1776,7 @@ class HadesEditor(QMainWindow):
             c.setSpacing(6)
             
             chk = QCheckBox()
-            chk.setToolTip("Desbloqueado")
+            chk.setToolTip(t("keepsake.unlocked"))
             chk.setStyleSheet(f"QCheckBox::indicator {{ width: 16px; height: 16px; border: 1px solid {color}; border-radius: 3px; }} QCheckBox::indicator:checked {{ background: {color}; }}")
             c.addWidget(chk)
             self._ks_unlock[key] = (chk, npc_key)
@@ -1378,8 +1824,8 @@ class HadesEditor(QMainWindow):
         opts = QFileDialog.Options()
         opts |= QFileDialog.DontUseNativeDialog
         path, _ = QFileDialog.getOpenFileName(
-            self, "Cargar Save de Hades", self._hades_dir(),
-            "Hades Save Files (*.sav);;All Files (*)", options=opts
+            self, t("dialog.load_title"), self._dialog_start(),
+            t("dialog.filter"), options=opts
         )
         if not path:
             return
@@ -1392,7 +1838,7 @@ class HadesEditor(QMainWindow):
             self.btn_max.setEnabled(True)
             self._path_lbl.setText(path)
         except Exception as e:
-            QMessageBox.critical(self, "Error al cargar", str(e))
+            QMessageBox.critical(self, t("dialog.load_error"), str(e))
 
     def _populate(self):
         sf = self.save_file
@@ -1439,6 +1885,8 @@ class HadesEditor(QMainWindow):
             wul = gs.get("WeaponUnlocks", {})
             for card in self._weapon_cards:
                 card.load(wu, wul)
+
+            self._fill_heat(gs)
 
             # Companions tab
             gift = gs.get("Gift", {})
@@ -1603,9 +2051,9 @@ class HadesEditor(QMainWindow):
         opts = QFileDialog.Options()
         opts |= QFileDialog.DontUseNativeDialog
         path, _ = QFileDialog.getSaveFileName(
-            self, "Guardar Save de Hades",
-            self.file_path or self._hades_dir(),
-            "Hades Save Files (*.sav);;All Files (*)", options=opts
+            self, t("dialog.save_title"),
+            self.file_path or self._dialog_start(),
+            t("dialog.filter"), options=opts
         )
         if not path:
             return
@@ -1614,20 +2062,22 @@ class HadesEditor(QMainWindow):
             self.save_file.to_file(path)
             self.file_path = path
             self._path_lbl.setText(path)
-            QMessageBox.information(self, "✓ Guardado", f"Archivo guardado en:\n{path}")
+            QMessageBox.information(self, t("dialog.saved_title"), t("dialog.saved_body", path=path))
         except Exception as e:
-            QMessageBox.critical(self, "Error al guardar", str(e))
+            QMessageBox.critical(self, t("dialog.save_error"), str(e))
 
     def _max_all(self):
         pass  # merged below
 
     def _max_all(self):
-        reply = QMessageBox.question(
-            self, "Maximizar Todo",
-            "¿Maximizar todos los recursos, desbloquear armas, aspectos ocultos, cosméticos y arcanas?",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        if reply != QMessageBox.Yes:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle(t("dialog.max_title"))
+        box.setText(t("dialog.max_body"))
+        yes = box.addButton(t("dialog.yes"), QMessageBox.YesRole)
+        box.addButton(t("dialog.no"), QMessageBox.NoRole)
+        box.exec_()
+        if box.clickedButton() is not yes:
             return
 
         is_h2 = self.game_toggle.isChecked()
@@ -1740,9 +2190,8 @@ class HadesEditor(QMainWindow):
                     cosmetics_view[c] = True
 
                 QMessageBox.information(
-                    self, "✓ MAX aplicado",
-                    "Recursos, armas, aspectos ocultos y cosméticos maximizados.\n"
-                    "Guarda el archivo para aplicar los cambios."
+                    self, t("dialog.max_done_title"),
+                    t("dialog.max_done_body")
                 )
 
     def _tab_resources_h2(self):
@@ -1752,20 +2201,20 @@ class HadesEditor(QMainWindow):
         lay.setSpacing(20)
 
         RESOURCES_H2 = [
-            ("🌑", "Ceniza (MetaPoints)", "MetaPoints",    GOLD),
-            ("🧠", "Psique (Memories)",   "Memories",      "#a080f0"),
-            ("🦴", "Huesos (Bones)",      "Bones",         "#f0f0f2"),
-            ("💰", "Oro (Money)",         "Money",         "#ffd700"),
-            ("🧶", "Tela del Destino",    "FateFabric",    "#60c0e0"),
-            ("⚒", "Plata (Silver)",      "Silver",        "#d0d0d0"),
-            ("🥉", "Bronce (Bronze)",     "Bronze",        "#cd7f32"),
-            ("⛓", "Hierro (Iron)",       "OrestesIron",   "#708090"),
-            ("🌙", "Polvo Lunar",         "MoonDust",      "#40c0f0"),
-            ("✨", "Polvo Estelar",       "StarDust",      "#ffe0a0"),
-            ("🍎", "Manzana Dorada",      "GoldenApple",   "#e04040"),
-            ("🐑", "Lana (Wool)",         "Wool",          "#f2f2f2"),
+            ("🌑", t("h2.ash"),    "MetaPoints",    GOLD),
+            ("🧠", t("h2.psyche"), "Memories",      "#a080f0"),
+            ("🦴", t("h2.bones"),  "Bones",         "#f0f0f2"),
+            ("💰", t("h2.gold"),    "Money",         "#ffd700"),
+            ("🧶", t("h2.fabric"), "FateFabric",    "#60c0e0"),
+            ("⚒", t("h2.silver"), "Silver",        "#d0d0d0"),
+            ("🥉", t("h2.bronze"), "Bronze",        "#cd7f32"),
+            ("⛓", t("h2.iron"),   "OrestesIron",   "#708090"),
+            ("🌙", t("h2.moon"),   "MoonDust",      "#40c0f0"),
+            ("✨", t("h2.star"),   "StarDust",      "#ffe0a0"),
+            ("🍎", t("h2.apple"),  "GoldenApple",   "#e04040"),
+            ("🐑", t("h2.wool"),   "Wool",          "#f2f2f2"),
         ]
-        grp = self._group("RECURSOS DEL INFRAMUNDO (HADES II)")
+        grp = self._group(t("group.h2_resources"))
         grid = QGridLayout(grp)
         grid.setSpacing(14)
         self._res_h2 = {}
@@ -1783,7 +2232,7 @@ class HadesEditor(QMainWindow):
         lay.setContentsMargins(24, 20, 24, 24)
         lay.setSpacing(10)
         
-        hint = QLabel("✦  Desbloquea cartas de Arcana para Melinoë")
+        hint = QLabel(t("arcana.hint"))
         hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px; padding-bottom: 10px;")
         lay.addWidget(hint)
 
@@ -1813,7 +2262,7 @@ class HadesEditor(QMainWindow):
             ("MaxHealthPerRoom",   "XXII - The World")
         ]
         
-        grp = self._group("CARTAS DE TAROT (ARCANA)")
+        grp = self._group(t("group.arcana"))
         grid = QGridLayout(grp)
         self._arcana_checks = {}
         for i, (key, label) in enumerate(CARDS):
@@ -1834,13 +2283,13 @@ class HadesEditor(QMainWindow):
         # world_upgrade_key = key in WorldUpgradesAdded (the incantation result)
         # weapons_unlocked_key = key in WeaponsUnlocked (the in-run access flag)
         H2_WEAPONS_DATA = [
-            ("Báculo de Bruja",  GOLD,      "WeaponStaffSwing", "StaffWeapon"),
-            ("Cuchillas Gemelas","#e06060",   "WeaponDagger",    "DaggerWeapon"),
-            ("Llamas Umbrales",  "#c080f0",   "WeaponTorch",     "TorchWeapon"),
-            ("Hacha de Piedra",  "#60d0e0",   "WeaponAxe",       "AxeWeapon"),
-            ("Cáneo de Argento", "#8090b0",   "WeaponArcLob",    "LobWeapon"),
+            (t("h2.staff"),  GOLD,      "WeaponStaffSwing", "StaffWeapon"),
+            (t("h2.blades"), "#e06060",   "WeaponDagger",    "DaggerWeapon"),
+            (t("h2.flames"), "#c080f0",   "WeaponTorch",     "TorchWeapon"),
+            (t("h2.axe"),    "#60d0e0",   "WeaponAxe",       "AxeWeapon"),
+            (t("h2.skull"),  "#8090b0",   "WeaponArcLob",    "LobWeapon"),
         ]
-        grp = self._group("ARMAS DE MELINOË")
+        grp = self._group(t("group.h2_weapons"))
         g_lay = QGridLayout(grp)
         g_lay.setSpacing(12)
         self._w_h2 = {}  # world_upgrade_key -> (chk, wu_key)
@@ -1852,12 +2301,12 @@ class HadesEditor(QMainWindow):
 
         # Tools similarly use WorldUpgradesAdded for their "bought" state
         TOOLS = [
-            ("Pico Creciente",   "#a0b0c0",   "WeaponPick",      "PickTool"),
-            ("Tablilla de Paz",  "#e0e0a0",   "WeaponTablet",    "TabletTool"),
-            ("Pala de Plata",    "#c0c0c0",   "WeaponShovel",    "ShovelTool"),
-            ("Caña de Pescar",   "#60a0f0",   "WeaponFishing",   "FishingTool"),
+            (t("h2.pick"),   "#a0b0c0",   "WeaponPick",      "PickTool"),
+            (t("h2.tablet"), "#e0e0a0",   "WeaponTablet",    "TabletTool"),
+            (t("h2.shovel"), "#c0c0c0",   "WeaponShovel",    "ShovelTool"),
+            (t("h2.rod"),    "#60a0f0",   "WeaponFishing",   "FishingTool"),
         ]
-        grp2 = self._group("HERRAMIENTAS")
+        grp2 = self._group(t("group.tools"))
         gt_lay = QGridLayout(grp2)
         gt_lay.setSpacing(12)
         self._t_h2 = {}  # world_upgrade_key -> (chk, wu_key)
@@ -1869,8 +2318,35 @@ class HadesEditor(QMainWindow):
         lay.addStretch()
         return scroll
 
+    def _switch_language(self, lang):
+        self.btn_en.setChecked(get_language() == "en")
+        self.btn_es.setChecked(get_language() == "es")
+        if lang == get_language():
+            return
+        if self.save_file:
+            try:
+                self._collect()
+            except Exception:
+                pass
+        save_language(lang)
+        checked = self.game_toggle.isChecked()
+        tabs_enabled = self.tabs.isEnabled()
+        new = HadesEditor()
+        new.save_file = self.save_file
+        new.file_path = self.file_path
+        if checked:
+            new.game_toggle.setChecked(True)
+        if new.save_file and tabs_enabled:
+            new._populate()
+            new.tabs.setEnabled(True)
+            new.btn_save.setEnabled(True)
+            new.btn_max.setEnabled(True)
+            if new.file_path:
+                new._path_lbl.setText(new.file_path)
+        new.show()
+        self.close()
 
-# ── Entry ─────────────────────────────────────────────────────────────────────
+
 # ── Entry ─────────────────────────────────────────────────────────────────────
     
 if __name__ == "__main__":
@@ -1885,7 +2361,8 @@ if __name__ == "__main__":
         app.setWindowIcon(QIcon(icon_path))
         
     app.setStyle("Fusion")
-    
+    load_language()
+
     welcome = WelcomeDialog()
     if welcome.exec_() == QDialog.Accepted:
         win = HadesEditor()

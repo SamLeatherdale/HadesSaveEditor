@@ -14,17 +14,17 @@ How to generate the executable for both **Mac** and **Windows**.
 ### 2. Generating for Mac (.app)
 Run this command from your terminal:
 ```bash
-pyinstaller --onefile --windowed --name "hadeseditor" main.py
+pyinstaller --onefile --windowed --name "HadesSaveEditor" --add-data "resources:resources" main.py
 ```
-After the build, you will find `dist/hadeseditor.app` (the complete app bundle) and `dist/hadeseditor` (the single executable binary).
+After the build, you will find `dist/HadesSaveEditor.app` (the complete app bundle) and `dist/HadesSaveEditor` (the single executable binary).
 
 ### 3. Generating for Windows (.exe)
 Since **PyInstaller** builds for the system it's currently running on, you **must** run this command from a Windows PC or Virtual Machine:
 
 ```bash
-pyinstaller --onefile --windowed --name "hadeseditor" main.py
+pyinstaller --onefile --windowed --name "HadesSaveEditor" --add-data "resources;resources" main.py
 ```
-This will result in `dist/hadeseditor.exe`.
+This will result in `dist/HadesSaveEditor.exe`.
 
 > [!NOTE]
 > Since we use **PyQt5**, cross-compilation (e.g. building for Windows from a Mac) is not directly supported without complex setups (Wine/Docker). It is always safer to build the binary on the actual target OS.
